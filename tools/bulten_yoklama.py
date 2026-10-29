@@ -62,6 +62,7 @@ class Page:
     height: float
     words: list[Word]
     images: list[Img]
+    headings: list[str] = field(default_factory=list)  # iri puntolu bölüm başlıkları
 
 
 @dataclass
@@ -75,6 +76,8 @@ class Record:
     sahip_var: bool = False
     vekil_var: bool = False
     sayfa: int = 0
+    tur: str = ""  # ilan | madrid | serh | belirsiz
+    uluslararasi_no: str = ""
     image_key: str | None = None
     image_page: int | None = None
     extra_images: int = 0
@@ -96,9 +99,11 @@ class PyMuPDFBackend:
     """Asıl kullanım: hızlı, C tabanlı."""
 
     def __init__(self, path: str):
-        import fitz  # PyMuPDF
+        try:
+            import pymupdf as fitz
+        except ImportError:  # eski sürümler
+            import fitz
 
-        self.fitz = fitz
         self.doc = fitz.open(path)
 
     def page_count(self) -> int:
@@ -115,7 +120,13 @@ class PyMuPDFBackend:
         for info in p.get_image_info(xrefs=True):
             x0, y0, x1, y1 = info["bbox"]
             images.append(Img(x0, y0, x1, y1, str(info.get("xref", 0))))
-        return Page(i + 1, p.rect.width, p.rect.height, words, images)
+        lines = []
+        for b in p.get_text("dict")["blocks"]:
+            for ln in b.get("lines", []):
+                spans = [sp for sp in ln["spans"] if sp["text"].strip()]
+                if spans:
+                    lines.append((max(sp["size"] for sp in spans), " ".join(sp["text"].strip() for sp in spans)))
+        return Page(i + 1, p.rect.width, p.rect.height, words, images, pick_headings(lines))
 
     def image_bytes(self, key: str) -> bytes | None:
         xref = int(key)
@@ -138,9 +149,14 @@ class PdfPlumberBackend:
 
     def page(self, i: int) -> Page:
         p = self.pdf.pages[i]
-        words = [
-            Word(w["x0"], w["top"], w["x1"], w["bottom"], w["text"])
-            for w in p.extract_words(keep_blank_chars=False, use_text_flow=False)
+        raw = p.extract_words(keep_blank_chars=False, use_text_flow=False, extra_attrs=["size"])
+        words = [Word(w["x0"], w["top"], w["x1"], w["bottom"], w["text"]) for w in raw]
+        lines: dict[int, list] = {}
+        for w in raw:
+            lines.setdefault(round(w["top"]), []).append(w)
+        heading_lines = [
+            (max(w["size"] for w in ws), " ".join(w["text"] for w in sorted(ws, key=lambda w: w["x0"])))
+            for ws in lines.values()
         ]
         images = []
         for n, im in enumerate(p.images):
@@ -148,7 +164,7 @@ class PdfPlumberBackend:
             self._streams[key] = im["stream"]
             images.append(Img(im["x0"], im["top"], im["x1"], im["bottom"], key))
         p.flush_cache()
-        return Page(i + 1, float(p.width), float(p.height), words, images)
+        return Page(i + 1, float(p.width), float(p.height), words, images, pick_headings(heading_lines))
 
     def image_bytes(self, key: str) -> bytes | None:
         """JPEG ise olduğu gibi; değilse çözülmüş pikselleri PNG'ye çevirir."""
@@ -176,6 +192,19 @@ class PdfPlumberBackend:
 # ---------------------------------------------------------------------------
 # Sayfa düzeni: başlık, sütunlar, satırlar
 # ---------------------------------------------------------------------------
+
+def pick_headings(lines: list[tuple[float, str]]) -> list[str]:
+    """Gövde puntosundan belirgin biçimde iri, harf içeren satırlar."""
+    if not lines:
+        return []
+    body = statistics.median(size for size, _ in lines)
+    out = []
+    for size, text in lines:
+        text = text.strip()
+        if size >= body * 1.25 and sum(ch.isalpha() for ch in text) >= 3 and not text.startswith("("):
+            out.append(text[:80])
+    return out
+
 
 HEADER_RE = re.compile(r"(\d{4}/\d+)\s+Resmi\s+Marka\s+B[üu]lteni", re.I)
 DATE_RE = re.compile(r"Yay[ıi]n\s+Tarihi\s*:?\s*(\d{2}\.\d{2}\.\d{4})", re.I)
@@ -235,14 +264,16 @@ def ordered_items(page: Page, words: list[Word]):
 # ---------------------------------------------------------------------------
 
 LABEL_SPLIT = re.compile(r"\((\d{3})\)")
-VIENNA_RE = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{1,2})\b")
+VIENNA_RE = re.compile(r"\b(\d{1,2})\.(\d{1,2})(?:\.(\d{1,2}))?\b")
+INTL_RE = re.compile(r"^\d{6,8}$")
 APPNO_RE = re.compile(r"^\d{4}/\d{5,6}$")
 DATE_ONLY_RE = re.compile(r"\d{2}\.\d{2}\.\d{4}")
 BEFORE_GOODS = {"210", "220", "731", "740", "vekil", "540", "531", "591", "300"}
 
 
 def norm_vienna(m: re.Match) -> str:
-    return "{:02d}.{:02d}.{:02d}".format(*(int(g) for g in m.groups()))
+    """26.1.3 -> 26.01.03 ; 26.01 -> 26.01 (Madrid kayıtlarında iki düzey)."""
+    return ".".join(f"{int(g):02d}" for g in m.groups() if g is not None)
 
 
 def feed_text(rec: Record, fld: str, text: str) -> None:
@@ -253,6 +284,9 @@ def feed_text(rec: Record, fld: str, text: str) -> None:
         return
     if fld == "vekil":
         rec.vekil_var = True
+        return
+    if fld == "566":
+        rec._raw.setdefault("566", []).append("")
         return
     if fld == "510" or not text:
         return
@@ -269,6 +303,12 @@ def finalize(rec: Record) -> Record:
     rec.siniflar = sorted(
         {int(x) for x in re.findall(r"\b\d{1,2}\b", " ".join(raw.get("511", []))) if 1 <= int(x) <= 45}
     )
+    if "566" in raw:
+        rec.tur = "serh"
+    elif rec.siniflar and (rec.ibare or rec.image_key):
+        rec.tur = "madrid" if rec.uluslararasi_no else "ilan"
+    else:
+        rec.tur = "belirsiz"
     rec._raw = {}
     rec._field = ""
     return rec
@@ -279,6 +319,8 @@ def parse(backend, max_pages: int = 0, progress_every: int = 100):
     orphan_images = 0
     bulten_no, yayin_tarihi = "", ""
     cur: Record | None = None
+    pending_intl = ""
+    headings: dict[str, list] = {}  # başlık -> [ilk sayfa, kaç kez]
     n = backend.page_count()
     if max_pages:
         n = min(n, max_pages)
@@ -292,6 +334,10 @@ def parse(backend, max_pages: int = 0, progress_every: int = 100):
             bulten_no = m.group(1) if m else ""
             m = DATE_RE.search(header)
             yayin_tarihi = m.group(1) if m else ""
+        for h in page.headings:
+            if h in header or "Bülteni" in h and "Yayın" in h:
+                continue
+            headings.setdefault(h, [page.number, 0])[1] += 1
 
         for kind, _top, payload in ordered_items(page, words):
             if kind == "img":
@@ -305,10 +351,14 @@ def parse(backend, max_pages: int = 0, progress_every: int = 100):
                 continue
 
             text: str = payload
+            if INTL_RE.match(text.strip()):
+                pending_intl = text.strip()  # Madrid: kaydın üstündeki uluslararası tescil no
+                continue
             if text.startswith("(210)"):
                 if cur is not None:
                     records.append(finalize(cur))
-                cur = Record(sayfa=page.number)
+                cur = Record(sayfa=page.number, uluslararasi_no=pending_intl)
+                pending_intl = ""
             if cur is None:
                 continue  # ön sayfalar
             if text.startswith("Vekil"):
@@ -339,6 +389,7 @@ def parse(backend, max_pages: int = 0, progress_every: int = 100):
         "sayfa": n,
         "sure_sn": round(time.time() - t0, 1),
         "sahipsiz_gorsel": orphan_images,
+        "basliklar": headings,
     }
     return records, meta
 
@@ -369,6 +420,9 @@ def pct(a: int, b: int) -> str:
 
 def build_report(records, meta, backend, out: Path, samples: int, thumb_px: int):
     out.mkdir(parents=True, exist_ok=True)
+    tum = records
+    turler = {t: [r for r in tum if r.tur == t] for t in ("ilan", "madrid", "serh", "belirsiz")}
+    records = turler["ilan"] + turler["madrid"]  # aşağıdaki tüm ölçümler yalnızca ilanlar üzerinden
     N = len(records)
     sekil = [r for r in records if r.sekil]
     diger = [r for r in records if not r.sekil]
@@ -422,14 +476,20 @@ def build_report(records, meta, backend, out: Path, samples: int, thumb_px: int)
     lines = [
         f"# Bülten yoklama raporu — {meta['bulten_no'] or '?'} ({meta['yayin_tarihi'] or '?'})",
         "",
-        f"- Sayfa: {meta['sayfa']} · süre: {meta['sure_sn']} sn · kayıt: {N}",
-        f"- Şekil markası ((540) = \"şekil\"): {len(sekil)} ({pct(len(sekil), N)})",
+        f"- Sayfa: {meta['sayfa']} · süre: {meta['sure_sn']} sn · (210) ile başlayan blok: {len(tum)}",
+        f"- İlan: {N} (ulusal {len(turler['ilan'])}, Madrid {len(turler['madrid'])}) · şerh: {len(turler['serh'])} · belirsiz: {len(turler['belirsiz'])} — {first(turler['belirsiz'])}",
+        f"- Şekil markası ((540) = \"şekil\"): {len(sekil)} ({pct(len(sekil), N)}) · ulusal {sum(r.sekil for r in turler['ilan'])}, Madrid {sum(r.sekil for r in turler['madrid'])}",
+        "",
+        "Aşağıdaki ölçümler yalnızca ilanlar (ulusal + Madrid) içindir.",
         "",
         "## Viyana kodları (531)",
         "",
         f"- Tüm kayıtlarda (531) var: {sum(1 for r in records if r.viyana)} ({pct(sum(1 for r in records if r.viyana), N)})",
         f"- Şekil markalarında var: {len(sekil) - len(sekil_no_vie)} / {len(sekil)} ({pct(len(sekil) - len(sekil_no_vie), len(sekil))})",
         f"- Görselli ama şekil olmayan kayıtlarda var: {sum(1 for r in diger if r.image_key and r.viyana)} / {sum(1 for r in diger if r.image_key)}",
+        f"- Ulusal ilanlarda (531): {sum(1 for r in turler['ilan'] if r.viyana)} / {len(turler['ilan'])} ({pct(sum(1 for r in turler['ilan'] if r.viyana), len(turler['ilan']))})",
+        f"- Madrid ilanlarında (531): {sum(1 for r in turler['madrid'] if r.viyana)} / {len(turler['madrid'])} ({pct(sum(1 for r in turler['madrid'] if r.viyana), len(turler['madrid']))})",
+        f"- İki düzeyli kod (ör. 26.01) içeren kayıt: {sum(1 for r in records if any(v.count('.') == 1 for v in r.viyana))}",
         f"- Kod başına kayıtta ortalama: {statistics.mean([len(r.viyana) for r in records if r.viyana]):.1f}" if any(r.viyana for r in records) else "- Kod yok",
         "",
         "## Görsel eşleşmesi",
@@ -463,6 +523,9 @@ def build_report(records, meta, backend, out: Path, samples: int, thumb_px: int)
             counts[c] = counts.get(c, 0) + 1
     for c, k in sorted(counts.items(), key=lambda t: -t[1])[:10]:
         lines.append(f"- Sınıf {c:02d}: {k} kayıt")
+    lines += ["", "## Bölüm başlıkları (iri puntolu satırlar, ilk görüldüğü sayfa)", ""]
+    for h, (pg, k) in list(meta.get("basliklar", {}).items())[:60]:
+        lines.append(f"- s.{pg}: {h}" + (f" (×{k})" if k > 1 else ""))
     lines += [
         "",
         f"Örnek kayıtlar `ornek_kayitlar.json` ve `ornek_onizleme/` içinde ({len(sample_recs)} adet). "
@@ -474,6 +537,10 @@ def build_report(records, meta, backend, out: Path, samples: int, thumb_px: int)
             {
                 **meta,
                 "kayit": N,
+                "ulusal": len(turler["ilan"]),
+                "madrid": len(turler["madrid"]),
+                "serh": len(turler["serh"]),
+                "belirsiz": len(turler["belirsiz"]),
                 "sekil": len(sekil),
                 "viyana_tum": sum(1 for r in records if r.viyana),
                 "viyana_sekil": len(sekil) - len(sekil_no_vie),
@@ -493,6 +560,8 @@ def build_report(records, meta, backend, out: Path, samples: int, thumb_px: int)
 def public(r: Record) -> dict:
     """Dışarı yazılabilecek alanlar; kişisel veri yok."""
     return {
+        "tur": r.tur,
+        "uluslararasi_no": r.uluslararasi_no,
         "basvuru_no": r.basvuru_no,
         "basvuru_tarihi": r.basvuru_tarihi,
         "ibare": r.ibare,

@@ -65,10 +65,10 @@ def make_pdf(path: Path) -> None:
             c.showPage()
             header()
 
-    def line(text: str, gap: float = 13):
+    def line(text: str, gap: float = 13, size: float = 10):
         if state["y"] - gap < 50:
             next_col()
-        c.setFont("T", 10)
+        c.setFont("T", size)
         c.drawString(cols[state["col"]], state["y"], text)
         state["y"] -= gap
 
@@ -122,6 +122,31 @@ def make_pdf(path: Path) -> None:
     line("(511)  16 , 35")
     line("(510)")
     line("Kağıt, karton.")
+
+    # Şerhler bölümü: (566) taşıyan kayıtlar ilan sayılmamalı
+    c.showPage()
+    header()
+    line("503. Marka Bülteni Şerhleri", gap=24, size=18)
+    line("HACİZ KONULANLAR", gap=20, size=14)
+    line("(210) 2026/039531 (220) 30/03/2026")
+    line("(566) bacasan Esas No: 2026/7 (KONYA 6. İCRA DAİRESİ")
+    line("MÜDÜRLÜĞÜ) Esas Tarihi : 20/10/2026")
+    line("BOLUNMELER", gap=20, size=14)
+    line("(210) 2026/059582 (220) 07.05.2026")
+    line("(566) trendfinansia")
+
+    # Madrid kaydı: üstte uluslararası no, iki düzeyli Viyana kodları
+    c.showPage()
+    header()
+    line("1943075", gap=16, size=12)
+    line("(210)  2026/988978          (220)  24.08.2026")
+    line("(731)  8116261-ÖRNEK FOOD PTE LTD (SG)")
+    line("(540)  waten")
+    line("(531)  26.01;27.01;28.03;")
+    image(_logo("WATEN"))
+    line("(511)  30")
+    line("(510)")
+    line("Blends of seasonings; dried culinary herbs.")
     c.showPage()
     c.save()
 
@@ -163,7 +188,20 @@ def check(tmp: Path, backend_name: str):
     assert meta["bulten_no"] == "2026/503", meta
     assert meta["yayin_tarihi"] == "27.10.2026", meta
     assert meta["sahipsiz_gorsel"] == 1, meta  # ön sayfa görseli
-    assert set(by_no) == {"2026/092671", "2026/092701", "2026/092702"}, list(by_no)
+    ilanlar = {r.basvuru_no: r for r in records if r.tur in ("ilan", "madrid")}
+    assert set(ilanlar) == {"2026/092671", "2026/092701", "2026/092702", "2026/988978"}, list(ilanlar)
+    assert sorted(r.basvuru_no for r in records if r.tur == "serh") == ["2026/039531", "2026/059582"]
+    assert not [r for r in records if r.tur == "belirsiz"], [r.basvuru_no for r in records if r.tur == "belirsiz"]
+
+    rm = by_no["2026/988978"]
+    assert rm.tur == "madrid" and rm.uluslararasi_no == "1943075", (rm.tur, rm.uluslararasi_no)
+    assert rm.viyana == ["26.01", "27.01", "28.03"], rm.viyana
+    assert rm.siniflar == [30] and rm.image_key
+    assert by_no["2026/092671"].tur == "ilan" and by_no["2026/092671"].uluslararasi_no == ""
+
+    basliklar = meta["basliklar"]
+    assert any("Şerhleri" in h for h in basliklar), basliklar
+    assert any("HACİZ" in h for h in basliklar), basliklar
 
     r1 = by_no["2026/092671"]
     assert r1.basvuru_tarihi == "17.07.2026"
@@ -185,13 +223,13 @@ def check(tmp: Path, backend_name: str):
     assert r3.image_key and r3.image_page == r3.sayfa + 1, (r3.sayfa, r3.image_page)  # logo sonraki sayfada
 
     # Görseller çıkarılabiliyor ve önizlemeye çevrilebiliyor
-    for r in records:
+    for r in ilanlar.values():
         data = backend.image_bytes(r.image_key)
         assert data and by.thumb_size(data, 160), r.basvuru_no
 
     # Kişisel veri hiçbir public kayıtta yok
     blob = str([by.public(r) for r in records])
-    for leak in ("UYDURMA", "ÖRNEK BRANDS", "MINNEAPOLIS", "VEKİL", "5256379"):
+    for leak in ("UYDURMA", "ÖRNEK BRANDS", "MINNEAPOLIS", "VEKİL", "5256379", "ÖRNEK FOOD", "İCRA"):
         assert leak not in blob, leak
 
     # Rapor üretimi uçtan uca çalışıyor

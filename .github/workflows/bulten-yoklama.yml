@@ -40,21 +40,43 @@ jobs:
       - name: Sentetik bültenle ayrıştırıcıyı test et (iki arka uç)
         run: python tests/test_bulten_yoklama.py
 
+      - name: Önbellek anahtarı
+        id: key
+        env:
+          PDF_URL: ${{ inputs.pdf_url }}
+        run: echo "k=bulten-$(printf '%s' "$PDF_URL" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      # Aynı bülten ikinci kez indirilmez; önbellekten gelir (17 dk yerine birkaç saniye).
+      - name: Bülteni önbellekten al
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: bulten-onbellek/bulten.pdf
+          key: ${{ steps.key.outputs.k }}
+
       - name: Bülteni indir
+        if: steps.cache.outputs.cache-hit != 'true'
         env:
           PDF_URL: ${{ inputs.pdf_url }}
         run: |
-          curl -fL --retry 3 --retry-delay 10 \
+          mkdir -p bulten-onbellek
+          # Bağlantı 2 dakika boyunca 10 KB/sn altına düşerse kes ve yeniden dene.
+          curl -fL --retry 3 --retry-delay 10 --retry-all-errors \
+            --speed-limit 10000 --speed-time 120 --max-time 3600 \
             -A "turk-marka-mcp yoklama (+https://github.com/skraptt/turk-marka-mcp)" \
-            -o "$RUNNER_TEMP/bulten.pdf" "$PDF_URL"
-          ls -lh "$RUNNER_TEMP/bulten.pdf"
+            -o bulten-onbellek/bulten.pdf "$PDF_URL"
+
+      - name: Dosyayı kontrol et
+        run: |
+          ls -lh bulten-onbellek/bulten.pdf
+          head -c 5 bulten-onbellek/bulten.pdf | grep -q '%PDF' || { echo "İndirilen dosya PDF değil"; exit 1; }
 
       - name: Ayrıştır ve raporla
         env:
           MAX_PAGES: ${{ inputs.max_pages }}
           SAMPLES: ${{ inputs.samples }}
         run: |
-          python tools/bulten_yoklama.py "$RUNNER_TEMP/bulten.pdf" \
+          python tools/bulten_yoklama.py bulten-onbellek/bulten.pdf \
             --out cikti --max-pages "$MAX_PAGES" --samples "$SAMPLES"
           cat cikti/rapor.md >> "$GITHUB_STEP_SUMMARY"
 
