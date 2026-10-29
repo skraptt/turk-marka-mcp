@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+cikti/
+cikti-*/
+*.pdf
+.DS_Store

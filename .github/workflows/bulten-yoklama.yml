@@ -1,0 +1,66 @@
+name: Bülten yoklaması
+
+# Elle çalıştırılır: Actions sekmesi → "Bülten yoklaması" → Run workflow.
+# Bülteni indirir, ayrıştırır ve yapı raporunu iş özetine yazar.
+# Bülten PDF'i yüklenmez; kişi adları hiçbir çıktıya yazılmaz.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pdf_url:
+        description: "Resmî Marka Bülteni PDF adresi (turkpatent.gov.tr/bultenler sayfasındaki İndir bağlantısı)"
+        required: true
+        default: "https://webim.turkpatent.gov.tr/file/fb63aca2-4afc-4d1a-ab41-f72c2c07ced3?name=503&download"
+      max_pages:
+        description: "En fazla kaç sayfa okunsun (0 = tamamı)"
+        required: false
+        default: "0"
+      samples:
+        description: "Gözle kontrol için kaç örnek önizleme kaydedilsin (0 = hiç)"
+        required: false
+        default: "15"
+
+permissions:
+  contents: read
+
+jobs:
+  yoklama:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bağımlılıkları kur
+        run: pip install pymupdf pillow pdfplumber reportlab
+
+      - name: Sentetik bültenle ayrıştırıcıyı test et (iki arka uç)
+        run: python tests/test_bulten_yoklama.py
+
+      - name: Bülteni indir
+        env:
+          PDF_URL: ${{ inputs.pdf_url }}
+        run: |
+          curl -fL --retry 3 --retry-delay 10 \
+            -A "turk-marka-mcp yoklama (+https://github.com/skraptt/turk-marka-mcp)" \
+            -o "$RUNNER_TEMP/bulten.pdf" "$PDF_URL"
+          ls -lh "$RUNNER_TEMP/bulten.pdf"
+
+      - name: Ayrıştır ve raporla
+        env:
+          MAX_PAGES: ${{ inputs.max_pages }}
+          SAMPLES: ${{ inputs.samples }}
+        run: |
+          python tools/bulten_yoklama.py "$RUNNER_TEMP/bulten.pdf" \
+            --out cikti --max-pages "$MAX_PAGES" --samples "$SAMPLES"
+          cat cikti/rapor.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Raporu ve örnekleri yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: bulten-yoklama
+          path: cikti/
+          retention-days: 3
