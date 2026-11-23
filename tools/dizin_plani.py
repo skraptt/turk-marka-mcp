@@ -45,7 +45,9 @@ def main(argv=None):
     else:
         hazir = set()
         if a.hazir and Path(a.hazir).exists():
+            # Varlık adları "<kimlik>.jsonl.gz" ya da ZIP parçaları için "<kimlik>-NN.jsonl.gz".
             hazir = {s.strip().split(".")[0] for s in Path(a.hazir).read_text().splitlines() if s.strip()}
+            hazir |= {h[:-3] for h in hazir if len(h) > 3 and h[-3] == "-" and h[-2:].isdigit()}
         secim = tam(rows, hazir, min(a.adet, 256))
     print(json.dumps({"include": secim}, ensure_ascii=False))
 

@@ -116,7 +116,19 @@ jobs:
             -A "turk-marka-mcp bulten-dizini (+https://github.com/skraptt/turk-marka-mcp)" \
             -o bulten.pdf "$URL"
           ls -lh bulten.pdf
-          head -c 5 bulten.pdf | grep -q '%PDF' || { echo "İndirilen dosya PDF değil"; exit 1; }
+          echo "Dosya türü: $(file -b bulten.pdf)"
+          mkdir -p parcalar
+          if head -c 5 bulten.pdf | grep -q '%PDF'; then
+            mv bulten.pdf parcalar/01.pdf
+          elif head -c 4 bulten.pdf | grep -q 'PK'; then
+            # 2009'da yüklenen eski sayılar ZIP içinde birden çok PDF olarak geliyor.
+            unzip -j -o -q bulten.pdf '*.pdf' '*.PDF' -d parcalar || true
+            rm -f bulten.pdf
+            ls parcalar | head -50
+          else
+            echo "Bu biçim tanınmıyor: $(file -b bulten.pdf)"; exit 1
+          fi
+          ls parcalar/*.[pP][dD][fF] >/dev/null 2>&1 || { echo "Arşivde PDF yok"; exit 1; }
 
       - name: Dizine çevir
         env:
@@ -126,16 +138,21 @@ jobs:
           TARIH: ${{ matrix.tarih }}
           MAXP: ${{ inputs.kip == 'ornek' && inputs.max_pages || '0' }}
         run: |
-          python tools/bulten_dizini.py bulten.pdf --kimlik "$KIMLIK" --baslik "$BASLIK" \
-            --dosya "$DOSYA" --tarih "$TARIH" --max-pages "$MAXP" --out dizin
-          rm -f bulten.pdf
+          # Tek PDF'te kimlik aynen kullanılır; ZIP'teki her PDF için kimliğe sıra eklenir.
+          n=$(ls parcalar | wc -l); i=0
+          for f in $(ls parcalar | sort); do
+            i=$((i+1)); k="$KIMLIK"; [ "$n" -gt 1 ] && k="$KIMLIK-$(printf %02d $i)"
+            python tools/bulten_dizini.py "parcalar/$f" --kimlik "$k" --baslik "$BASLIK" \
+              --dosya "$DOSYA ${f%.*}" --tarih "$TARIH" --max-pages "$MAXP" --out dizin
+          done
+          rm -rf parcalar
 
       - name: Dizini sürüme ekle
         if: inputs.kip == 'tam'
         env:
           GH_TOKEN: ${{ github.token }}
           KIMLIK: ${{ matrix.kimlik }}
-        run: gh release upload dizin "dizin/$KIMLIK.jsonl.gz" "dizin/$KIMLIK.ozet.json" --clobber
+        run: gh release upload dizin dizin/* --clobber
 
       - uses: actions/upload-artifact@v4
         with:
