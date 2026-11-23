@@ -1,0 +1,165 @@
+name: Bülten dizini
+
+# Elle çalıştırılır: Actions → "Bülten dizini" → Run workflow.
+#
+#   kip = ornek  Her yıldan bir bülten, ilk `max_pages` sayfası okunur. Ayrıştırıcının
+#                eski bülten biçimlerinde çalışıp çalışmadığını ölçer. Hiçbir şey yayımlamaz.
+#   kip = tam    Henüz dizinlenmemiş en yeni `adet` bülten baştan sona okunur. Her
+#                bültenin dizini (.jsonl.gz) "dizin" sürümüne varlık olarak eklenir.
+#
+# Liste, TÜRKPATENT Bültenler sayfasının kullandığı /api/bulletins adresinden alınır.
+# Arama sayfasına (CAPTCHA'lı) dokunulmaz. Siteye yük bindirmemek için aynı anda en
+# fazla iki bülten indirilir. Bülten PDF'leri saklanmaz; kişi adları dizine yazılmaz.
+
+on:
+  workflow_dispatch:
+    inputs:
+      kip:
+        description: "ornek = her yıldan bir bülten (ölçüm) · tam = dizine ekle"
+        type: choice
+        options: [ornek, tam]
+        default: ornek
+      max_pages:
+        description: "ornek kipinde her bültenden okunacak sayfa (0 = tamamı)"
+        required: false
+        default: "80"
+      adet:
+        description: "tam kipinde işlenecek bülten sayısı"
+        required: false
+        default: "6"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bulten-dizini
+  cancel-in-progress: false
+
+jobs:
+  liste:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # tam kipinde "dizin" sürümünü oluşturmak için
+    outputs:
+      matris: ${{ steps.plan.outputs.matris }}
+      bos: ${{ steps.plan.outputs.bos }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Araçları test et
+        run: |
+          pip install pdfplumber pillow reportlab
+          python tests/test_bulten_dizini.py
+
+      - name: Bülten listesini al
+        run: python tools/bulten_listesi.py --out bultenler.json
+
+      - name: Dizinlenmiş bültenler
+        if: inputs.kip == 'tam'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view dizin >/dev/null 2>&1 || gh release create dizin --latest=false \
+            --title "Bülten dizini" \
+            --notes "Resmî Marka Bülteni kayıtlarının kişisel veri içermeyen dizini; bülten başına bir .jsonl.gz dosyası. Bülten dizini iş akışı üretir."
+          gh release view dizin --json assets -q '.assets[].name' > hazir.txt || true
+          echo "$(wc -l < hazir.txt) dosya zaten dizinde"
+
+      - name: Plan
+        id: plan
+        env:
+          KIP: ${{ inputs.kip }}
+          ADET: ${{ inputs.adet }}
+        run: |
+          python tools/dizin_plani.py bultenler.json --kip "$KIP" --adet "$ADET" --hazir hazir.txt > matris.json
+          echo "matris=$(cat matris.json)" >> "$GITHUB_OUTPUT"
+          if [ "$(python -c 'import json;print(len(json.load(open("matris.json"))["include"]))')" = "0" ]; then
+            echo "bos=evet" >> "$GITHUB_OUTPUT"; echo "İşlenecek bülten yok." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          python -c 'import json;[print(r["tarih"], r["baslik"], r["dosya"]) for r in json.load(open("matris.json"))["include"]]'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bulten-listesi
+          path: bultenler.json
+          retention-days: 7
+
+  isle:
+    needs: liste
+    if: needs.liste.outputs.bos != 'evet'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write   # tam kipinde dizini sürüme yüklemek için
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.liste.outputs.matris) }}
+    name: ${{ matrix.tarih }} · ${{ matrix.dosya }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pymupdf pillow pdfplumber
+
+      - name: Bülteni indir
+        env:
+          URL: ${{ matrix.url }}
+        run: |
+          # Bağlantı 2 dakika boyunca 10 KB/sn altına düşerse kes ve yeniden dene.
+          curl -fL --retry 3 --retry-delay 15 --retry-all-errors \
+            --speed-limit 10000 --speed-time 120 --max-time 5400 \
+            -A "turk-marka-mcp bulten-dizini (+https://github.com/skraptt/turk-marka-mcp)" \
+            -o bulten.pdf "$URL"
+          ls -lh bulten.pdf
+          head -c 5 bulten.pdf | grep -q '%PDF' || { echo "İndirilen dosya PDF değil"; exit 1; }
+
+      - name: Dizine çevir
+        env:
+          KIMLIK: ${{ matrix.kimlik }}
+          BASLIK: ${{ matrix.baslik }}
+          DOSYA: ${{ matrix.dosya }}
+          TARIH: ${{ matrix.tarih }}
+          MAXP: ${{ inputs.kip == 'ornek' && inputs.max_pages || '0' }}
+        run: |
+          python tools/bulten_dizini.py bulten.pdf --kimlik "$KIMLIK" --baslik "$BASLIK" \
+            --dosya "$DOSYA" --tarih "$TARIH" --max-pages "$MAXP" --out dizin
+          rm -f bulten.pdf
+
+      - name: Dizini sürüme ekle
+        if: inputs.kip == 'tam'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KIMLIK: ${{ matrix.kimlik }}
+        run: gh release upload dizin "dizin/$KIMLIK.jsonl.gz" "dizin/$KIMLIK.ozet.json" --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ozet-${{ matrix.kimlik }}
+          path: dizin/
+          retention-days: 7
+
+  rapor:
+    needs: [liste, isle]
+    if: always() && needs.liste.outputs.bos != 'evet'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ozet-*
+          path: ozetler
+          merge-multiple: true
+      - name: Rapor
+        run: |
+          python tools/dizin_raporu.py ozetler > rapor.md
+          cat rapor.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dizin-raporu
+          path: rapor.md
+          retention-days: 7
