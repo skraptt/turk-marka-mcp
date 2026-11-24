@@ -36,6 +36,7 @@ API_YANITI = [
         _bulten("504", "2026-11-12", ("s504", "504_Sayili_Resmi Marka Bülteni")),
         _bulten("503", "2026-10-27", ("s503", "503_Sayili_Resmi Marka Bülteni")),
         _bulten("300", "2017-06-12", ("s300", "300 Sayılı Bülten")),
+        _bulten("503", "2026-09-30", ("sg503", "503_Sayili_Marka_Gazetesi")),
     ]},
     {"mode": "all", "page": 2, "pages": 2, "pageSize": 3, "total": 5, "data": [
         _bulten("300", "2017-06-12", ("s300", "300 Sayılı Bülten")),      # sayfalar arasında yinelenen kayıt
@@ -47,7 +48,7 @@ API_YANITI = [
 
 def test_liste():
     rows = bl.rows_from(API_YANITI)
-    assert [r["kimlik"] for r in rows] == ["s504", "s503", "s300", "s33", "s1"], rows
+    assert [r["kimlik"] for r in rows] == ["s504", "s503", "sg503", "s300", "s33", "s1"], rows
     assert rows[0]["url"] == "https://webim.turkpatent.gov.tr/file/s504?download"
     assert rows[0]["tarih"] == "2026-11-12" and rows[0]["baslik"] == "504"
     assert {r["baslik"] for r in rows if r["tarih"] == "2009-09-14"} == {"1-102"}
@@ -58,7 +59,13 @@ def test_plan():
     ornek = dp.ornek(rows)
     assert [r["tarih"][:4] for r in ornek] == ["2009", "2017", "2026"]
     assert ornek[-1]["kimlik"] == "s504"                       # yılın en yenisi
-    assert [r["kimlik"] for r in dp.tam(rows, {"s504"}, 2)] == ["s503", "s300"]
+    assert [r["kimlik"] for r in dp.tam(rows, {"s504"}, 2)] == ["s503", "sg503"]   # tam() süzmez
+    import subprocess
+    liste = Path(tempfile.mkdtemp()) / "l.json"
+    liste.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    out = subprocess.run([sys.executable, str(ROOT / "tools" / "dizin_plani.py"), str(liste), "--kip", "tam",
+                          "--adet", "9"], capture_output=True, text=True, check=True).stdout
+    assert "sg503" not in out and "s503" in out                 # Marka Gazetesi plandan çıkar
 
 
 def test_dizin_ve_rapor():

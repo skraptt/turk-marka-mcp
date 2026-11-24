@@ -40,6 +40,9 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     rows = json.loads(Path(a.liste).read_text(encoding="utf-8"))
+    # Marka Gazetesi ayrı bir yayın (tescil kayıtları); bülten ayrıştırıcısı ondan ibare
+    # çıkaramıyor. Şimdilik dizine alınmaz.
+    rows = [r for r in rows if "gazete" not in (r.get("dosya", "") + r.get("baslik", "")).lower()]
     if a.kip == "ornek":
         secim = ornek(rows)
     else:
