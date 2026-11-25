@@ -22,9 +22,11 @@ Rapor şunları ölçer: kayıt sayısı, (531) Viyana kodlarının oranı, logo
 
 **Kapsam sınırı:** Bültenler yayıma çıkan başvuruları içerir. Eski tescilleri, yenilemeleri ve başvurunun sonraki durumunu (ret, geri çekme, sona erme) göstermez. Bu yüzden dizin "bu isim boş" sonucunu veremez. Sadece "şu bültenlerde benzer ibareler yayımlanmış" diyebilir. Kesin sonuç için TÜRKPATENT'te elle araştırma gerekir.
 
-**Kullanım** (Actions → **Bülten dizini** → Run workflow):
+**Gece çalışması:** İş akışı her gece kendiliğinden `tam` kipinde çalışır ve henüz dizinlenmemiş en yeni 20 bülteni işler. Arşiv bitince yalnızca yeni çıkan bültenleri ekler. Marka Gazetesi dosyaları (tescil listeleri) şimdilik dizine alınmaz.
 
-- `kip = ornek`: Her yıldan bir bültenin ilk `max_pages` sayfasını okur. Ayrıştırıcının eski bülten biçimlerinde çalışıp çalışmadığını gösteren bir tablo üretir. Hiçbir şey yayımlamaz.
+**Elle çalıştırma** (Actions → **Bülten dizini** → Run workflow):
+
+- `kip = ornek`: Her yıldan (ya da `yillar` ile seçilen yıllardan) bir bültenin ilk `max_pages` sayfasını okur. Ayrıştırıcının eski bülten biçimlerinde çalışıp çalışmadığını gösteren bir tablo üretir. Hiçbir şey yayımlamaz.
 - `kip = tam`: Henüz dizinlenmemiş en yeni `adet` bülteni baştan sona okur. Her birinin dizinini (`<kimlik>.jsonl.gz`) ve özetini depodaki **dizin** sürümüne ekler. Aynı anda en fazla iki bülten indirilir. Bir bülten yaklaşık 400 MB olduğu için her çalıştırma birkaç bülteni işler; iş akışını tekrar çalıştırmak kaldığı yerden devam eder.
 
 Araçlar: `tools/bulten_listesi.py` (arşiv listesi), `tools/dizin_plani.py` (hangi bültenler işlenecek), `tools/bulten_dizini.py` (PDF'ten dizine), `tools/dizin_raporu.py` (özet tablo).

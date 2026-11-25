@@ -37,6 +37,7 @@ def main(argv=None):
     ap.add_argument("--kip", choices=["ornek", "tam"], default="ornek")
     ap.add_argument("--adet", type=int, default=10)
     ap.add_argument("--hazir", help="Dizinlenmiş kimlikler, satır başına bir tane")
+    ap.add_argument("--yillar", default="", help="ornek kipinde yalnızca bu yıllar, virgülle (ör. 2009,2012)")
     a = ap.parse_args(argv)
 
     rows = json.loads(Path(a.liste).read_text(encoding="utf-8"))
@@ -45,6 +46,9 @@ def main(argv=None):
     rows = [r for r in rows if "gazete" not in (r.get("dosya", "") + r.get("baslik", "")).lower()]
     if a.kip == "ornek":
         secim = ornek(rows)
+        yillar = {y.strip() for y in a.yillar.split(",") if y.strip()}
+        if yillar:
+            secim = [r for r in secim if r["tarih"][:4] in yillar]
     else:
         hazir = set()
         if a.hazir and Path(a.hazir).exists():
