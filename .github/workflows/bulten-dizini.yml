@@ -134,6 +134,12 @@ jobs:
             unzip -j -o -q bulten.pdf '*.pdf' '*.PDF' -d parcalar || true
             rm -f bulten.pdf
             ls parcalar | head -50
+          elif head -c 4 bulten.pdf | grep -q 'Rar!'; then
+            # 2009'da yüklenen bazı eski sayılar RAR arşivi.
+            command -v 7z >/dev/null || sudo apt-get install -y -qq p7zip-full p7zip-rar
+            7z e -y -bd -oparcalar bulten.pdf '*.pdf' '*.PDF' -r >/dev/null
+            rm -f bulten.pdf
+            ls parcalar | head -50
           else
             echo "Bu biçim tanınmıyor: $(file -b bulten.pdf)"; exit 1
           fi

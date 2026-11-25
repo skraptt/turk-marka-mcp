@@ -41,9 +41,11 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     rows = json.loads(Path(a.liste).read_text(encoding="utf-8"))
-    # Marka Gazetesi ayrı bir yayın (tescil kayıtları); bülten ayrıştırıcısı ondan ibare
-    # çıkaramıyor. Şimdilik dizine alınmaz.
-    rows = [r for r in rows if "gazete" not in (r.get("dosya", "") + r.get("baslik", "")).lower()]
+    # Bugünkü "Marka Gazetesi" ayrı bir yayın (tescil kayıtları); bülten ayrıştırıcısı
+    # ondan ibare çıkaramıyor, şimdilik dizine alınmaz. 2016 öncesinde ise bültenin adı
+    # "Marka Gazetesi" idi; o dosyalar bülten sayılır ve dizine girer.
+    rows = [r for r in rows
+            if not ("gazete" in (r.get("dosya", "") + r.get("baslik", "")).lower() and r["tarih"] >= "2016")]
     if a.kip == "ornek":
         secim = ornek(rows)
         yillar = {y.strip() for y in a.yillar.split(",") if y.strip()}
