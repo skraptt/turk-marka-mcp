@@ -155,10 +155,11 @@ jobs:
           MAXP: ${{ inputs.kip == 'ornek' && inputs.max_pages || '0' }}
         run: |
           # Tek PDF'te kimlik aynen kullanılır; ZIP'teki her PDF için kimliğe sıra eklenir.
+          # Arşivdeki dosya adlarında boşluk olabilir ("223 Sayılı Bülten.pdf"): glob ile dolaş.
           n=$(ls parcalar | wc -l); i=0
-          for f in $(ls parcalar | sort); do
-            i=$((i+1)); k="$KIMLIK"; [ "$n" -gt 1 ] && k="$KIMLIK-$(printf %02d $i)"
-            python tools/bulten_dizini.py "parcalar/$f" --kimlik "$k" --baslik "$BASLIK" \
+          for p in parcalar/*; do
+            f=$(basename "$p"); i=$((i+1)); k="$KIMLIK"; [ "$n" -gt 1 ] && k="$KIMLIK-$(printf %02d $i)"
+            python tools/bulten_dizini.py "$p" --kimlik "$k" --baslik "$BASLIK" \
               --dosya "$DOSYA ${f%.*}" --tarih "$TARIH" --max-pages "$MAXP" --out dizin
           done
           rm -rf parcalar
